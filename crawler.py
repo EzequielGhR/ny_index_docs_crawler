@@ -93,7 +93,7 @@ def ny_crawler(case_number:str, debug:bool=False) -> dict:
         driver.close()
         driver.switch_to.window(handles['case_search'])
         output['cases'] += 1
-        output['data'] += {'case_number': 'TODO', 'docs': docs_per_case}
+        output['data'] += {'case_number': index_number, 'docs': docs_per_case}
     
     driver.close()
     driver.quit()
