@@ -4,12 +4,12 @@ import deathbycaptcha
 import json
 import random
 
-from selenium import webdriver
+from seleniumwire import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
 from time import sleep, time_ns
 
@@ -25,15 +25,16 @@ def solve_captcha(driver:webdriver.chrome.webdriver.WebDriver, dbc_username:str,
         - dbc_password: Password for the DeathByCaptchaAccount.
     """
     wait = WebDriverWait(driver, 10)
-    frames = wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, "iframe")))
 
-    source = ''
-    for frame in frames:
-        if frame.get_attribute('title').lower().strip() == 'recaptcha':
-            source = frame.get_attribute('src')
-        break
+    try:
+        frames = wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, "iframe")))
 
-    if source:
+        source = ''
+        for frame in frames:
+            if frame.get_attribute('title').lower().strip() == 'recaptcha':
+                source = frame.get_attribute('src')
+            break
+
         site_key = source.split('k=')[-1].split('&')[0]
         url = driver.current_url
 
@@ -46,22 +47,21 @@ def solve_captcha(driver:webdriver.chrome.webdriver.WebDriver, dbc_username:str,
 
         client = deathbycaptcha.SocketClient(dbc_username, dbc_password)
 
-        try:
-            captcha = client.decode(type=4, token_params=json_)
-            if not captcha:
-                #TODO: something here
-                raise Exception("Error solving captcha")
+        captcha = client.decode(type=4, token_params=json_)
+        if not captcha:
+            #TODO: something here
+            raise Exception("Error solving captcha")
 
-            logging.info("Captcha '{}' solved: '{}'".format(captcha['captcha'], captcha('text')))
-            solution = captcha['text']
-            driver.execute_script("document.getElementById('g-recaptcha-response').innerHTML='{}'".format(solution))
+        logging.info("Captcha '{}' solved: '{}'".format(captcha['captcha'], captcha('text')))
+        solution = captcha['text']
+        driver.execute_script("document.getElementById('g-recaptcha-response').innerHTML='{}'".format(solution))
 
-            #TODO: Finish up, probably click an input
-        
-        except deathbycaptcha.AccessDeniedException:
-            logging.warning("Error: Access to DBCC API denied, check your accounty balance and/or credentials")
+        #TODO: Finish up, probably click an input
     
-    else:
+    except deathbycaptcha.AccessDeniedException:
+        logging.warning("Error: Access to DBCC API denied, check your accounty balance and/or credentials")
+        
+    except TimeoutException:
         logging.info("Captcha not found.")
 
 def check_for_captcha(driver:webdriver.chrome.webdriver.WebDriver) -> None:
@@ -201,6 +201,13 @@ def ny_crawler(case_number:str, dw_batch_size:int, proxies:list=[], debug:bool=F
         check_for_captcha(driver) #TODO: Replace when captcha solver is ready
         handles['case_info'] = driver.window_handles[-1]
         driver.switch_to.window(handles['case_info'])
+
+        tds = driver.find_elements(By.CSS_SELECTOR, "body > table > tbody > tr > td > table > tbody > tr > td")
+        for i, td in enumerate(tds):
+            if 'index number' in td.text.strip().lower():
+                index_number = tds[i+1].text.strip()
+                break
+
         if check_for_docs(driver):
             handles['case_docs'] = driver.window_handles[-1]
             driver.switch_to.window(handles['case_docs'])
