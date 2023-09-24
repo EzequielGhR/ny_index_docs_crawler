@@ -1,107 +1,16 @@
 import logging
 import argparse
-import deathbycaptcha
 import json
 import random
 
 from seleniumwire import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
-
 from time import sleep, time_ns
+from helper import *
 
 
-SITE = "https://iapps.courts.state.ny.us/webcivil/FCASSearch?param=I"
-
-def solve_captcha(driver:webdriver.chrome.webdriver.WebDriver, dbc_username:str, dbc_password:str) -> None:
-    """
-    Solve page captchas using a DeathByCaptcha account.
-    Params:
-        - driver: Selenium's Chrome webdriver.
-        - dbc_username: Username for the DeathByCaptchaAccount.
-        - dbc_password: Password for the DeathByCaptchaAccount.
-    """
-    wait = WebDriverWait(driver, 10)
-
-    try:
-        frames = wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, "iframe")))
-
-        source = ''
-        for frame in frames:
-            if frame.get_attribute('title').lower().strip() == 'recaptcha':
-                source = frame.get_attribute('src')
-            break
-
-        site_key = source.split('k=')[-1].split('&')[0]
-        url = driver.current_url
-
-        json_ = json.dumps({
-            "proxy": "",
-            "proxytype": "http",
-            "googlekey": site_key,
-            "page_url": url
-        })
-
-        client = deathbycaptcha.SocketClient(dbc_username, dbc_password)
-
-        captcha = client.decode(type=4, token_params=json_)
-        if not captcha:
-            #TODO: something here
-            raise Exception("Error solving captcha")
-
-        logging.info("Captcha '{}' solved: '{}'".format(captcha['captcha'], captcha('text')))
-        solution = captcha['text']
-        driver.execute_script("document.getElementById('g-recaptcha-response').innerHTML='{}'".format(solution))
-
-        #TODO: Finish up, probably click an input
-    
-    except deathbycaptcha.AccessDeniedException:
-        logging.warning("Error: Access to DBCC API denied, check your accounty balance and/or credentials")
-        
-    except TimeoutException:
-        logging.info("Captcha not found.")
-
-def check_for_captcha(driver:webdriver.chrome.webdriver.WebDriver) -> None:
-    """
-    Temporary function for debug purposes
-    """
-    try:
-        sleep(10)
-        driver.find_element(By.NAME, "captcha_form")
-        logging.info("captcha found")
-        input("please hit enter when captcha is solved")
-    except NoSuchElementException:
-        pass
-
-def check_for_docs(driver:webdriver.chrome.webdriver.WebDriver) -> bool:
-    """
-    Returns True if a case has documents, False if it doesn't
-    Params:
-        - driver: Selenium's Chrome webdriver
-    """
-    try:
-        driver.find_element(By.NAME, "showEfiledButton").click()
-        return True
-    except NoSuchElementException:
-        logging.info("No docs found")
-        return False
-
-def get_proxies_pool(p_usr: str, p_pass: str, p_list:list) -> list:
-    """
-    Function that creates the correct proxies pool from a given proxies list
-    Params:
-        - p_usr: User for premium proxies account.
-        - p_pass: Password for premium proxies account.
-        - p_list: list of proxies
-
-    """
-    return ["http://{}:{}@{}".format(p_usr, p_pass, p) for p in p_list]
-
-
-def ny_crawler(case_number:str, dw_batch_size:int, proxies:list=[], debug:bool=False) -> dict:
+def ny_crawler(input_number:str, dw_batch_size:int, proxies:list=[], debug:bool=False) -> dict:
     """
     Main documents Crawler. Returns a dictionary with the next structure:
 
@@ -138,12 +47,12 @@ def ny_crawler(case_number:str, dw_batch_size:int, proxies:list=[], debug:bool=F
             just for debugging processes
     """
     #initialize metrics:
-    output = {"input_case_number": case_number, "data": [], "cases": 0}
+    output = {"input_case_number": input_number, "data": [], "cases": 0}
 
     #Set up pdf download options
     options = webdriver.ChromeOptions()
     options.add_experimental_option('prefs', {
-        "download.default_directory": "/app/docs/{}".format(case_number.replace("/", "_")), #TODO: Make this more flexible
+        "download.default_directory": "/app/docs/{}".format(input_number.replace("/", "_")), #TODO: Make this more flexible
         "download.prompt_for_download": False, #To auto download the file
         "download.directory_upgrade": True,
         "plugins.always_open_pdf_externally": True #It will not show PDF directly in chrome
@@ -184,7 +93,7 @@ def ny_crawler(case_number:str, dw_batch_size:int, proxies:list=[], debug:bool=F
     #wait for captcha
     check_for_captcha(driver) #TODO: Replace when captcha solver is ready
     #input case number
-    driver.find_element(By.ID, "txtIndex").send_keys(case_number)
+    driver.find_element(By.ID, "txtIndex").send_keys(input_number)
     driver.find_element(By.CSS_SELECTOR, "input.normal").click()
     check_for_captcha(driver) #TODO: Replace when captcha solver is ready
 
@@ -202,13 +111,10 @@ def ny_crawler(case_number:str, dw_batch_size:int, proxies:list=[], debug:bool=F
         handles['case_info'] = driver.window_handles[-1]
         driver.switch_to.window(handles['case_info'])
 
-        tds = driver.find_elements(By.CSS_SELECTOR, "body > table > tbody > tr > td > table > tbody > tr > td")
-        for i, td in enumerate(tds):
-            if 'index number' in td.text.strip().lower():
-                index_number = tds[i+1].text.strip()
-                break
+        general_data = extract_general_data(driver) #extract case general data
 
-        if check_for_docs(driver):
+        #work on case documents
+        if check_for_button(driver, "showEfiledButton"):
             handles['case_docs'] = driver.window_handles[-1]
             driver.switch_to.window(handles['case_docs'])
             docs = driver.find_elements(
@@ -249,7 +155,8 @@ def ny_crawler(case_number:str, dw_batch_size:int, proxies:list=[], debug:bool=F
         
         driver.switch_to.window(handles['case_search'])
         output['cases'] += 1
-        output['data'] += {'case_number': index_number, 'docs': docs_per_case}
+        general_data['docs'] = docs_per_case
+        output['data'] += general_data
     
     logging.info("execution finished")
     driver.close()
@@ -264,7 +171,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", type=str, help="debug boolean parameter")
 
     args = parser.parse_args()
-    index_number = args.index_number
+    input_number = args.input_number
     dw_batch_size = eval(args.dw_batch_size)
     debug = eval(args.debug.capitalize())
 
@@ -274,7 +181,7 @@ if __name__ == "__main__":
     if not isinstance(debug, bool):
         raise TypeError("'debug' param must be a boolean")
     
-    output = ny_crawler(index_number, dw_batch_size, debug)
+    output = ny_crawler(input_number, dw_batch_size, debug)
 
     with open("output_{}.json".format(time_ns()), "w") as f:
         f.write(json.dumps(output))
