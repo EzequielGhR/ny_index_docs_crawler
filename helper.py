@@ -1,7 +1,9 @@
 import logging
 import deathbycaptcha
 import json
+import pandas as pd
 
+from io import StringIO
 from seleniumwire import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -137,3 +139,30 @@ def check_for_button(driver, button_name:str) -> bool:
     except NoSuchElementException:
         logging.info("No button '{}' found".format(button_name))
         return False
+
+def extract_attorneys(driver:webdriver.Chrome, plaintiff:bool=True) -> dict:
+    atty_table = '<table>'+driver.find_element(
+        By.CSS_SELECTOR,
+        'body > table > tbody > tr > td:nth-child(2) > table:nth-child(5)'
+    ).get_attribute('innerHTML')+'</table>'
+    
+    df = pd.read_html(StringIO(atty_table))[0].dropna(subset=[0])
+
+    output = {
+        'plaintiff': [],
+        'defendant': []
+    }
+
+    for _, row in df.iterrows():
+        if 'plaintiff' in row[0].lower():
+            plaintiff = True
+            continue
+        if 'defendant' in row[0].lower():
+            plaintiff=False
+            continue
+        if row[0] == row[1]:
+            output["plaintiff" if plaintiff else "defendant"][-1]["direction"] = row[0]
+            continue
+        output["plaintiff" if plaintiff else "defendant"].append({"atty": row[0]})
+    
+    return output
